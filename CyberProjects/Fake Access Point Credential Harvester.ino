@@ -1,8 +1,9 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
+#include "mbedtls/sha256.h"
 
-const char* AP_SSID = "Fake Wifi for Apartment";
+const char* AP_SSID = "ESP32 Security Lab";
 const byte DNS_PORT = 53;
 
 IPAddress apIP(192,168,4,1);
@@ -11,14 +12,47 @@ IPAddress netMsk(255,255,255,0);
 DNSServer dnsServer;
 WebServer server(80);
 
-// String portalPage() {
+// --- helpers ---------------------------------------------------------
+
+String sha256Hex(const String& input) {
+  byte hash[32];
+  mbedtls_sha256_context ctx;
+  mbedtls_sha256_init(&ctx);
+  mbedtls_sha256_starts_ret(&ctx, 0);
+  mbedtls_sha256_update_ret(&ctx, (const unsigned char*)input.c_str(), input.length());
+  mbedtls_sha256_finish_ret(&ctx, hash);
+  mbedtls_sha256_free(&ctx);
+
+  const char* hex = "0123456789abcdef";
+  String out;
+  out.reserve(64);
+  for (int i = 0; i < 32; i++) {
+    out += hex[(hash[i] >> 4) & 0xF];
+    out += hex[hash[i] & 0xF];
+  }
+  return out;
+}
+
+String clientIP() {
+  return server.client().remoteIP().toString();
+}
+
+String userAgent() {
+  // WebServer doesn't always expose headers unless requested; this works when present.
+  return server.header("User-Agent");
+}
+
+// --- portal page -----------------------------------------------------
+
+String portalPage() {
+  // IMPORTANT: training/education banner to keep this recruiter-safe.
   return R"HTML(
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>This Is Fake Wifi Apartments Wifi — Sign In</title>
+  <title>Security Lab Captive Portal — Sign In</title>
   <style>
     :root {
       --bg: #0b1020;
@@ -31,12 +65,14 @@ WebServer server(80);
       --accent2: #00d4ff;
       --shadow: 0 18px 60px rgba(0,0,0,0.55);
       --radius: 18px;
+      --warn: rgba(255, 170, 0, 0.16);
+      --warnb: rgba(255, 170, 0, 0.35);
     }
 
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
       background: radial-gradient(1200px 700px at 20% 20%, rgba(124,92,255,0.25), transparent 60%),
                   radial-gradient(900px 600px at 90% 30%, rgba(0,212,255,0.18), transparent 55%),
                   linear-gradient(180deg, #060913, var(--bg));
@@ -55,10 +91,7 @@ WebServer server(80);
       gap: 18px;
       align-items: stretch;
     }
-
-    @media (max-width: 860px) {
-      .wrap { grid-template-columns: 1fr; }
-    }
+    @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
 
     .hero, .card {
       border: 1px solid var(--border);
@@ -70,11 +103,7 @@ WebServer server(80);
       overflow: hidden;
     }
 
-    .hero {
-      padding: 26px 26px 22px;
-      position: relative;
-    }
-
+    .hero { padding: 26px 26px 22px; }
     .badge {
       display: inline-flex;
       align-items: center;
@@ -87,77 +116,31 @@ WebServer server(80);
       color: var(--muted);
       width: fit-content;
     }
-
     .dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
+      width: 10px; height: 10px; border-radius: 50%;
       background: radial-gradient(circle at 30% 30%, var(--accent2), var(--accent));
       box-shadow: 0 0 16px rgba(124,92,255,0.7);
     }
+    h1 { margin: 16px 0 10px; font-size: 34px; line-height: 1.12; letter-spacing: -0.02em; }
+    .sub { margin: 0 0 18px; color: var(--muted); max-width: 52ch; line-height: 1.55; }
 
-    h1 {
-      margin: 16px 0 10px;
-      font-size: 34px;
-      line-height: 1.12;
-      letter-spacing: -0.02em;
-    }
-
-    .sub {
-      margin: 0 0 18px;
-      color: var(--muted);
-      max-width: 52ch;
-      line-height: 1.55;
-    }
-
-    .pill-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 16px;
-    }
-
-    .pill {
-      padding: 10px 12px;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.05);
-      color: var(--muted);
+    .training {
+      margin-top: 14px;
+      padding: 12px 12px;
+      border-radius: 14px;
+      border: 1px solid var(--warnb);
+      background: var(--warn);
+      color: rgba(255,255,255,0.86);
       font-size: 13px;
+      line-height: 1.45;
     }
 
-    .card {
-      padding: 22px;
-      display: grid;
-      align-content: start;
-      gap: 14px;
-    }
+    .card { padding: 22px; display: grid; align-content: start; gap: 14px; }
+    .card h2 { margin: 0; font-size: 18px; letter-spacing: -0.01em; }
+    .hint { margin: 0 0 4px; color: var(--muted); font-size: 13px; line-height: 1.4; }
 
-    .card h2 {
-      margin: 0;
-      font-size: 18px;
-      letter-spacing: -0.01em;
-    }
-
-    .hint {
-      margin: 0 0 4px;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.4;
-    }
-
-    form {
-      display: grid;
-      gap: 12px;
-      margin-top: 6px;
-    }
-
-    label {
-      display: block;
-      font-size: 13px;
-      color: var(--muted);
-      margin-bottom: 6px;
-    }
+    form { display: grid; gap: 12px; margin-top: 6px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 
     input {
       width: 100%;
@@ -167,38 +150,6 @@ WebServer server(80);
       background: rgba(0,0,0,0.22);
       color: var(--text);
       outline: none;
-      transition: border-color .15s ease, box-shadow .15s ease, transform .05s ease;
-    }
-
-    input:focus {
-      border-color: rgba(124,92,255,0.75);
-      box-shadow: 0 0 0 4px rgba(124,92,255,0.18);
-    }
-
-    .row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-top: 6px;
-    }
-
-    .check {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--muted);
-      font-size: 13px;
-      user-select: none;
-    }
-
-    .check input {
-      width: 16px;
-      height: 16px;
-      margin: 0;
-      padding: 0;
-      box-shadow: none;
     }
 
     button {
@@ -211,103 +162,59 @@ WebServer server(80);
       color: white;
       background: linear-gradient(90deg, var(--accent), var(--accent2));
       box-shadow: 0 14px 30px rgba(0, 212, 255, 0.12);
-      transition: transform .06s ease, filter .15s ease;
-    }
-    button:active { transform: translateY(1px); }
-    button:hover { filter: brightness(1.05); }
-
-    .fineprint {
-      margin: 10px 0 0;
-      color: rgba(255,255,255,0.55);
-      font-size: 12px;
-      line-height: 1.45;
     }
 
-    .links {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-top: 4px;
-    }
-    .links a {
-      color: rgba(255,255,255,0.72);
-      font-size: 13px;
-      text-decoration: none;
-      border-bottom: 1px dashed rgba(255,255,255,0.28);
-    }
-    .links a:hover { color: rgba(255,255,255,0.92); }
-
-    .footer {
-      margin-top: 10px;
-      color: rgba(255,255,255,0.55);
-      font-size: 12px;
-      text-align: center;
-    }
+    .fineprint { margin: 10px 0 0; color: rgba(255,255,255,0.55); font-size: 12px; line-height: 1.45; }
+    .footer { margin-top: 10px; color: rgba(255,255,255,0.55); font-size: 12px; text-align: center; }
   </style>
 </head>
 
 <body>
   <div class="wrap">
-    <!-- Left / Brand panel -->
     <section class="hero" aria-label="Network information">
       <div class="badge">
         <span class="dot" aria-hidden="true"></span>
-        Secure Portal • This Is Fake Wifi Apartments Wifi
+        Captive Portal Demo • ESP32 Security Lab
       </div>
 
-      <h1>Welcome to<br>This Is Fake Wifi Apartments Wifi</h1>
+      <h1>Welcome to<br>ESP32 Security Lab Wi-Fi</h1>
       <p class="sub">
-        Sign in to connect. If you just moved in and nothing works, congratulations:
-        you're now part of apartment living's oldest tradition.
+        This network intentionally triggers a captive portal to demonstrate how rogue AP phishing works
+        and how to spot it.
       </p>
 
-      <div class="pill-row" aria-label="Features">
-        <div class="pill">Fast reconnect</div>
-        <div class="pill">Device-friendly</div>
-        <div class="pill">Encrypted login</div>
-        <div class="pill">24/7 access</div>
+      <div class="training">
+        <strong>TRAINING MODE:</strong> Do not enter real passwords. This page is a safe demo.
+        Submissions are not stored; passwords are never logged in plaintext.
       </div>
     </section>
 
-    <!-- Right / Login card -->
     <section class="card" aria-label="Sign in form">
       <div>
         <h2>Sign in</h2>
-        <p class="hint">Use your resident portal credentials to get online.</p>
+        <p class="hint">Enter a demo username and any password to see the awareness screen.</p>
       </div>
 
       <form action="/login" method="POST">
         <div>
-          <label for="username">Username:</label>
+          <label for="username">Username (demo):</label>
           <input type="text" id="username" name="username" required autocomplete="username" />
         </div>
 
         <div>
-          <label for="password">Password:</label>
+          <label for="password">Password (demo):</label>
           <input type="password" id="password" name="password" required autocomplete="current-password" />
-        </div>
-
-        <div class="row">
-          <label class="check">
-            <input type="checkbox" name="remember" />
-            Remember me
-          </label>
-
-          <div class="links">
-            <a href="/forgot">Forgot password?</a>
-            <a href="/help">Help</a>
-          </div>
         </div>
 
         <button type="submit">Connect</button>
 
         <p class="fineprint">
-          By signing in, you agree to the acceptable use policy. Don't do weird stuff.
-          (Or at least don't do it on the building Wi-Fi.)
+          This is an educational captive portal simulation. If you ever see a login like this in the wild,
+          treat it as hostile until proven otherwise.
         </p>
       </form>
 
-      <div class="footer">© This Is Fake Wifi Apartments • Wifi Access Portal</div>
+      <div class="footer">© ESP32 Security Lab • Captive Portal Demo</div>
     </section>
   </div>
 </body>
@@ -320,6 +227,8 @@ void redirectToRoot() {
   server.send(302, "text/plain", "");
 }
 
+// --- setup/loop ---
+
 void setup() {
   Serial.begin(115200);
 
@@ -327,43 +236,65 @@ void setup() {
   WiFi.softAPConfig(apIP, apIP, netMsk);
   WiFi.softAP(AP_SSID);
 
-  // DNS: resolve ANY domain to the ESP32 AP IP
   dnsServer.start(DNS_PORT, "*", apIP);
 
-  // Main portal
+  // Request headers we want (User-Agent)
+  const char* headerKeys[] = {"User-Agent"};
+  server.collectHeaders(headerKeys, 1);
+
   server.on("/", HTTP_GET, []() {
     server.send(200, "text/html", portalPage());
   });
 
-  // Handle login form submission
+  // NO PLAINTEXT PASSWORD LOGGING
+  // Original Version had plaintext password logging but for writeup we're not doing that.
   server.on("/login", HTTP_POST, []() {
-    String username = server.arg("username");  // Get the username from the form
-    String password = server.arg("password");  // Get the password from the form
+    String username = server.arg("username");
+    String password = server.arg("password");
 
-    // Log the username and password to Serial Monitor
-    Serial.print("Username: ");
-    Serial.println(username);
-    Serial.print("Password: ");
-    Serial.println(password);
+    // Safe telemetry
+    String ip = clientIP();
+    String ua = userAgent();
 
-    // Respond to the user
+    // Hash the password immediately and discard plaintext
+    String pwHash = sha256Hex(password);
+    password = ""; // explicitly drop plaintext copy (for legal purposes I'm not risking that haha)
+
+    Serial.println("\n--- Captive Portal Submission (Training Mode) ---");
+    Serial.print("Uptime(ms): "); Serial.println(millis());
+    Serial.print("Client IP: ");  Serial.println(ip);
+    Serial.print("User-Agent: "); Serial.println(ua);
+    Serial.print("Username: ");   Serial.println(username);
+    Serial.print("Password SHA-256: "); Serial.println(pwHash);
+    Serial.println("NOTE: plaintext password was NOT logged or stored.\n");
+
+    // Awareness response
     server.send(200, "text/html",
-      "<html><body><h3>✅ Login Successful</h3><p>You can close this window.</p></body></html>");
+      "<html><body style='font-family:system-ui;padding:22px;'>"
+      "<h2>✅ Demo Complete</h2>"
+      "<p>This was a <b>captive portal security awareness demo</b>.</p>"
+      "<p><b>Lesson:</b> Never type real credentials into a Wi-Fi portal unless you trust the network.</p>"
+      "<ul>"
+      "<li>Verify the SSID/BSSID</li>"
+      "<li>Prefer cellular or a trusted VPN</li>"
+      "<li>Assume portals are hostile by default</li>"
+      "</ul>"
+      "<p>You can close this window.</p>"
+      "</body></html>"
+    );
   });
 
-  // iOS / macOS captive checks
-  server.on("/hotspot-detect.html", HTTP_GET, redirectToRoot);     
-  server.on("/library/test/success.html", HTTP_GET, redirectToRoot); 
+  // Captive checks
+  server.on("/hotspot-detect.html", HTTP_GET, redirectToRoot);
+  server.on("/library/test/success.html", HTTP_GET, redirectToRoot);
+  server.on("/generate_204", HTTP_GET, redirectToRoot);
 
-  // Android / ChromeOS checks
-  server.on("/generate_204", HTTP_GET, redirectToRoot);            
-
-  // Catch-all: anything else -> portal
+  // Catch-all
   server.onNotFound(redirectToRoot);
 
   server.begin();
 
-  Serial.println("Captive portal running.");
+  Serial.println("Captive portal running (recruiter-safe mode).");
   Serial.print("AP SSID: "); Serial.println(AP_SSID);
   Serial.print("Portal IP: "); Serial.println(apIP);
 }
